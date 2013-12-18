@@ -1,0 +1,26 @@
+require "./Message"
+require "./Messaging"
+require "./Routing"
+require 'socket'
+require 'json'
+require './Node'
+
+
+
+
+s = UDPSocket.new()
+s.bind(nil, 8080)
+
+n = Node.new()
+puts n.hashString("component")
+n.init(s)
+
+puts "initialised"
+
+loop do
+
+end
+
+
+
+
