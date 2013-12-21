@@ -99,4 +99,14 @@ class Message
     return message.to_json
   end
 
+  def ack_index(node_id, word)
+    message = Hash.new
+    message = {
+        "type" => "ACK_INDEX",
+        "node_id" => node_id,
+        "keyword" => word
+    }
+    return message.to_json
+  end
+
 end

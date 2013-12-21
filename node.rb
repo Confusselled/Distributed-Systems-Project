@@ -16,9 +16,9 @@ class Node
   @index
   @options
   @search_resuts
-  @ACK_rec
-  @suspected_dead_node_id
-  @lock
+  @index_ack_waitinglist
+  @ping_ack_waitinglist
+
 
   def message_receiver
     loop do
@@ -85,7 +85,7 @@ class Node
           if text["target_id"] == @id
             @index.addIndex(text["keyword"], text["link"])
             #send ACK to original node
-            mesg = @msg_constructor.ack(text["sender_id"], @IP )
+            mesg = @msg_constructor.ack_index(text["sender_id"], text["keyword"] )
             puts mesg
             @socket.send(mesg, 0, '127.0.0.1', @routing_info.get_closest_node_by_id(text["sender_id"]))
           else
@@ -115,39 +115,76 @@ class Node
           end
         when "PING"
           puts "Received a PING message"
-
+          puts text
           #acknowledge the PING
           mesg = @msg_constructor.ack(text["target_id"], @IP)
-          #puts mesg
+          puts mesg
           @socket.send(mesg, 0, '127.0.0.1', text["ip_address"])
 
           if text["target_id"] != @id
-            #ping_forward = @msg_constructor.ping(text["target_id"], text["sender_id"], @IP)
-            #@socket.send(ping_forward, 0, '127.0.0.1', @routing_info.get_closest_node_by_id(text["target_id"]))
-            ping_forward_thread = Thread.new{PING_forward_handler(text)}
+            ping_forward = @msg_constructor.ping(text["target_id"], text["sender_id"], @IP)
+            puts "sending ping to #{@routing_info.get_closest_node_by_id(text["target_id"])}"
+            closest_node = @routing_info.get_closest_node_by_id(text["target_id"])
+            @socket.send(ping_forward, 0, '127.0.0.1', @routing_info.get_closest_node_by_id(text["target_id"]))
+            #add to waiting list for timeout handling
+            ping_list = Hash.new()
+            ping_list = {
+                "node_id" => text["target_id"],
+                "send_time" => Time.now.to_i.to_s,
+                "closest_node" => closest_node
+            }
+            @ping_ack_waitinglist.push(ping_list)
           else
             puts "im the ping target"
           end
+
         when "ACK"
           puts "Received a ACK message"
-          #puts text
+          puts text
           #puts @id
-          if text["node_id"] == @id
-            #reset relevant timer
-            puts "im the ACK target, its for one of my index messages"
-            @ACK_rec = true
-
-          elsif text["node_id"] == @suspected_dead_node_id
-            puts "im the ACK target, its for one of my dead node PINGs"
-            @ACK_rec = true
-
-          else
+          forward = true
+          @ping_ack_waitinglist.each{|x|
+            if x["node_id"] == text["node_id"]
+              puts "Ping poping x: #{x}"
+              puts @ping_ack_waitinglist
+              @ping_ack_waitinglist.delete(x)
+              puts @ping_ack_waitinglist
+              forward = false
+            end
+          }
+          if forward
             #forward to target node
             mesg = @msg_constructor.ack(text["node_id"], @IP )
-            #puts mesg
+            puts mesg
             #puts @routing_info.get_closest_node_by_id(text["node_id"])
             @socket.send(mesg, 0, '127.0.0.1', @routing_info.get_closest_node_by_id(text["node_id"]))
           end
+
+        when "ACK_INDEX"
+          puts "Received a ACK_INDEX message"
+          puts text
+          puts @index_ack_waitinglist
+          forward = true
+          @index_ack_waitinglist.each{|x|
+            if x["keyword"] == text["keyword"]
+              puts "Index poping x: #{x}"
+              puts @index_ack_waitinglist
+              @index_ack_waitinglist.delete(x)
+              puts @index_ack_waitinglist
+              forward = false
+            end
+          }
+          if forward
+            #forward to target node
+            #mesg = @msg_constructor.ack_index(text["node_id"], @IP )
+            #puts "ACK_INDEX #{mesg}"
+            #puts @routing_info.get_closest_node_by_id(text["node_id"])
+            puts "forwarding the ACK_INDEX"
+            puts @routing_info.get_closest_node_by_id(text["node_id"])
+            @socket.send(t, 0, '127.0.0.1', @routing_info.get_closest_node_by_id(text["node_id"]))
+            puts "ACK_INDEX sent"
+          end
+
         else
           puts "Received an unrecognised message type"
 
@@ -159,6 +196,7 @@ class Node
 
 
   def init(s)
+
     @options = {
         "boot" => false,
         "id" => 0,
@@ -184,8 +222,8 @@ class Node
 
     end.parse!
 
-    @lock = Mutex.new
-    @ACK_rec = false
+    @index_ack_waitinglist = Array.new
+    @ping_ack_waitinglist = Array.new
     @socket = s
     @routing_info = Routing.new()
     @msg_constructor = Message.new()
@@ -197,11 +235,12 @@ class Node
     @msg_server = Messaging.new()
     #@IP = ip
     @index = Index.new()
-    @suspected_dead_node_id = 0
+
     if @bootstrap
       server_thread = Thread.new{message_receiver()}
     end
-
+    ping_mon = Thread.new{ping_monitor()}
+    index_mon = Thread.new{index_monitor()}
   end
 
   def joinNetwork(ip, id, target_id)
@@ -227,52 +266,19 @@ class Node
       my_mesg = @msg_constructor.index( hashString(x), @id, x, url)
       #puts my_mesg
       #puts @routing_info.get_closest_node_by_id(x)
-      @lock.synchronize do
-        @socket.send(my_mesg, 0, 'localhost', @routing_info.get_closest_node_by_id(hashString(x)))
-        @ACK_rec = false
-        #wait for index to be ACKed
-        t = Time.now
 
-        while delta < 30 && !@ACK_rec
-          delta = (Time.now.to_i - t.to_i)
-        end
-      end
-      puts "stopped waiting for INDEX ACK"
-      #if we exited the above while loop because the timer
-      #reached 30, need to ping the suspected dead node
-      if delta == 30
-        puts "Delta is 30, need to send PING"
-        @ACK_rec = false
-        @suspected_dead_node_id = hashString(x)
-        ping_msg = @msg_constructor.ping(hashString(x), @id, @IP);
-        puts ping_msg
-        @lock.synchronize do
-          @socket.send(ping_msg, 0, 'localhost', @routing_info.get_closest_node_by_id(hashString(x)))
-          t = Time.now
-          delta = 0
-          while delta < 10 && !@ACK_rec
-            delta = (Time.now.to_i - t.to_i)
-          end
-        end
-        puts "stopped waiting for PING ACK"
-        #if ten seconds pass, assume node dead and
-        #remove from routing table (if present)
-        if delta == 10
-          #we remove the node we sent the ping to, not
-          #the suspected dead node
-          puts "removing node from routing table"
-          @routing_info.remove_node(@routing_info.get_closest_node_by_id(x))
-        else
-          puts "Received an ACK before delta reached 10, proceed as per usual"
-        end
-        #reset for next iteration
-        @ACK_rec = false
-        @suspected_dead_node_id = 0
-      end
+      @socket.send(my_mesg, 0, 'localhost', @routing_info.get_closest_node_by_id(hashString(x)))
+
+      #wait for index to be ACKed
+
+      index_ref = Hash.new()
+      index_ref = {
+          "keyword" => x,
+          "send_time" => Time.now.to_i.to_s
+      }
+      puts index_ref
+      @index_ack_waitinglist.push(index_ref)
     }
-
-
-
   end
 
   def hashString(string)
@@ -300,30 +306,61 @@ class Node
     #@search_resuts
   end
 
-  def PING_forward_handler(text)
-    @ACK_rec = false
-    @suspected_dead_node_id = text["target_id"]
-    ping_msg = @msg_constructor.ping(text["target_id"], @id, @IP);
-    #puts ping_msg
-    @lock.synchronize do
-      @socket.send(ping_msg, 0, 'localhost', @routing_info.get_closest_node_by_id(text["target_id"]))
-      t = Time.now
-      delta = 0
-      while delta < 10 && !@ACK_rec
-        delta = (Time.now.to_i - t.to_i)
+  def ping_monitor
+    loop do
+      if @ping_ack_waitinglist.length > 0
+        puts "Ping waiting list > 0 and is #{@ping_ack_waitinglist}"
+        @ping_ack_waitinglist.each {|x|
+          if Time.now.to_i - x["send_time"].to_i >= 10
+            #timer expired, remove node from routing table
+            #not it is node closest to the ID we remove as
+            #this is who the message was sent to, and its this
+            #node that failed to respond
+            puts "Ping timer expired removing node"
+            @routing_info.remove_node(x["closest_node"])
+            #remove node from the ping_ack_waitinglist
+            @ping_ack_waitinglist.pop(x)
+          end
+        }
       end
+      sleep(1)
     end
-    puts "stopped waiting for PING ACK"
-    #if ten seconds pass, assume node dead and
-    #remove from routing table (if present)
-    if delta == 10
-      #we remove the node we sent the ping to, not
-      #the suspected dead node
-      puts "removing node from routing table"
-      @routing_info.remove_node(@routing_info.get_closest_node_by_id(x))
-    else
-      puts "Received an ACK before delta reached 10, proceed as per usual"
-    end
-
   end
+
+  def index_monitor
+    loop do
+      #puts "looping"
+      if @index_ack_waitinglist.length > 0
+        puts "We are waiting for an index ACK"
+
+        @index_ack_waitinglist.each{ |x|
+          puts x
+          delta = Time.now.to_i - x["send_time"].to_i
+          puts delta
+          if delta >= 10
+            #send ping
+            puts  "delta > 30"
+
+            ping_msg = @msg_constructor.ping(hashString(x["keyword"]), @id, @IP)
+            puts ping_msg
+            closest_node = @routing_info.get_closest_node_by_id(hashString(x["keyword"]))
+            @socket.send(ping_msg, 0, 'localhost', closest_node)
+            #remove from index_ack_waitinglist and add to
+            #ping_ack_waitinglist
+            ping_list = Hash.new()
+            ping_list = {
+                "node_id" => hashString(x["keyword"]),
+                "send_time" => Time.now.to_i.to_s,
+                "closest_node" => closest_node
+            }
+            @ping_ack_waitinglist.push(ping_list)
+            @index_ack_waitinglist.pop(x)
+          end
+          puts "exit if"
+        }
+      end
+      sleep(1)
+    end
+  end
+
 end

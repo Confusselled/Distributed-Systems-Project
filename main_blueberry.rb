@@ -21,14 +21,14 @@ puts "Joining a network"
 join_msg = n.joinNetwork("8080","blueberry", "chocolate"  );
 puts "Joined a network"
 sleep(40)
-=begin
+
 puts "Index message sending"
 unique_words = Array.new()
 unique_words.push("cucumber")
 join_msg = n.indexPage("www.dsg.tcd.ie", unique_words)
 puts "Index message sent"
 sleep(10)
-=end
+#=begin=end
 =begin
 puts "Ping component"
 msg_constructor = Message.new()
