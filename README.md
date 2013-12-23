@@ -1,6 +1,8 @@
 Distributed-Systems-Project
 ===========================
-
+Chris Fenlon
+09344756
+Computer Engineering MAI
 
 This is my submission for the distributed systems project.
 
